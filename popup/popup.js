@@ -300,6 +300,20 @@ async function handleVaultDelete() {
   closeVaultForm();
 }
 
+// ---- 字幕フェッチ（YouTubeページの MAIN world で実行 → Cookie が使われる） ----
+// この関数はシリアライズされてページ内で実行されるため外部スコープを参照してはならない
+function _fetchCaptionTextFromPage(captionUrl) {
+  const rawUrl = captionUrl.startsWith("//") ? `https:${captionUrl}` : captionUrl;
+  const url = new URL(rawUrl);
+  url.searchParams.set("fmt", "json3");
+  return fetch(url.toString())
+    .then((res) => {
+      if (!res.ok) return { error: `字幕の取得に失敗しました (HTTP ${res.status})` };
+      return res.text().then((text) => ({ text }));
+    })
+    .catch((err) => ({ error: err.message }));
+}
+
 // ---- Obsidianへ保存 ----
 
 async function handleSave() {
@@ -328,10 +342,51 @@ async function handleSave() {
   showStatus("status", "字幕データを取得中...", "info");
 
   try {
+    // 1. YouTubeページのコンテキスト（Cookie付き）で字幕テキストを取得
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [fetchExec] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: "MAIN",
+      func: _fetchCaptionTextFromPage,
+      args: [captionUrl],
+    });
+
+    const fetchResult = fetchExec?.result;
+    if (!fetchResult || fetchResult.error) {
+      showStatus("status", fetchResult?.error || "字幕の取得に失敗しました", "error");
+      return;
+    }
+
+    const rawText = fetchResult.text ?? "";
+    if (!rawText.trim()) {
+      showStatus("status", "字幕データが空でした。この動画の字幕は取得できません。", "error");
+      return;
+    }
+
+    // 2. JSON3 → XML フォールバックでパース（utils.js の関数を使用）
+    let transcript;
+    if (rawText.trimStart().startsWith("{")) {
+      try {
+        transcript = parseTranscriptJson3(JSON.parse(rawText));
+      } catch {
+        transcript = parseTranscriptXml(rawText);
+      }
+    } else {
+      transcript = parseTranscriptXml(rawText);
+    }
+
+    if (!transcript) {
+      showStatus("status", "字幕データを解析できませんでした。", "error");
+      return;
+    }
+
+    showStatus("status", "Obsidianに保存中...", "info");
+
+    // 3. Service Worker 経由で Obsidian に保存（パース済みテキストを渡す）
     const result = await chrome.runtime.sendMessage({
       action: "saveToObsidian",
       videoInfo,
-      selectedCaptionUrl: captionUrl,
+      transcript,
       folder,
       apiKey: vault.apiKey,
       port: vault.port,

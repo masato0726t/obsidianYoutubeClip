@@ -1,45 +1,9 @@
 importScripts("../src/utils.js");
 
-async function fetchTranscript(captionBaseUrl) {
-  // プロトコル相対URL (//) を https: に正規化する
-  const rawUrl = captionBaseUrl.startsWith("//")
-    ? `https:${captionBaseUrl}`
-    : captionBaseUrl;
+// 字幕フェッチはpopup.jsのexecuteScript(world:'MAIN')が担当するため
+// ここではパース済みのtranscriptテキストを受け取りObsidianに保存するだけ
 
-  const url = new URL(rawUrl);
-  url.searchParams.set("fmt", "json3");
-
-  const response = await fetch(url.toString());
-  if (!response.ok) {
-    throw new Error(`字幕の取得に失敗しました (HTTP ${response.status})`);
-  }
-
-  const text = await response.text();
-
-  if (!text.trim()) {
-    throw new Error("字幕データが空でした。この動画の字幕は取得できない可能性があります。");
-  }
-
-  // JSON3形式を試みる
-  if (text.trimStart().startsWith("{")) {
-    try {
-      return parseTranscriptJson3(JSON.parse(text));
-    } catch {
-      // JSON パース失敗 → XML フォールバックへ
-    }
-  }
-
-  // XML形式にフォールバック
-  const xmlResult = parseTranscriptXml(text);
-  if (xmlResult) return xmlResult;
-
-  throw new Error(
-    "字幕データを解析できませんでした。字幕の形式が対応していない可能性があります。"
-  );
-}
-
-async function saveToObsidian({ videoInfo, selectedCaptionUrl, folder, apiKey, port }) {
-  const transcript = await fetchTranscript(selectedCaptionUrl);
+async function saveToObsidian({ videoInfo, transcript, folder, apiKey, port }) {
   const noteContent = buildNoteContent(videoInfo, transcript);
   const fileName = `${sanitizeFileName(videoInfo.title)}.md`;
   const vaultUrl = buildVaultUrl(port, folder, fileName);
