@@ -15,7 +15,6 @@ const ENTRIES = [
   { type: "file", name: "manifest.json" },
   { type: "dir",  name: "icons" },
   { type: "dir",  name: "src" },
-  { type: "dir",  name: "content" },
   { type: "dir",  name: "background" },
   { type: "dir",  name: "popup" },
 ];

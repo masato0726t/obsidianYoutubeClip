@@ -170,17 +170,54 @@ async function initPopup() {
   document.getElementById("save-btn").addEventListener("click", handleSave);
 }
 
-async function initVideoInfo(tab) {
+// content script の分離ワールド問題を回避するため、
+// ページの main world に直接アクセスして ytInitialPlayerResponse を取得する。
+// この関数はシリアライズされてページ内で実行されるため、外部スコープを参照してはならない。
+function _extractVideoInfoFromPage() {
   try {
-    videoInfo = await chrome.tabs.sendMessage(tab.id, { action: "getVideoInfo" });
+    const data = window.ytInitialPlayerResponse;
+    if (!data?.videoDetails) return null;
+    const vd = data.videoDetails;
+    const tracks =
+      data.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+    return {
+      title: vd.title,
+      videoId: vd.videoId,
+      channelTitle: vd.author,
+      lengthSeconds: parseInt(vd.lengthSeconds) || 0,
+      captionTracks: tracks.map((t) => ({
+        languageCode: t.languageCode,
+        name: t.name?.simpleText || t.languageCode,
+        baseUrl: t.baseUrl,
+      })),
+    };
   } catch {
-    showStatus("status", "ページを再読み込みしてから再試行してください", "error");
+    return null;
+  }
+}
+
+async function initVideoInfo(tab) {
+  let execResult;
+  try {
+    [execResult] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: "MAIN",
+      func: _extractVideoInfoFromPage,
+    });
+  } catch (err) {
+    showStatus("status", `スクリプトの実行に失敗しました: ${err.message}`, "error");
     document.getElementById("video-info").classList.remove("hidden");
     return;
   }
 
+  videoInfo = execResult?.result ?? null;
+
   if (!videoInfo) {
-    showStatus("status", "動画情報を取得できませんでした。ページを再読み込みしてください。", "error");
+    showStatus(
+      "status",
+      "動画情報を取得できませんでした。ページが完全に読み込まれてから再試行してください。",
+      "error"
+    );
     document.getElementById("video-info").classList.remove("hidden");
     return;
   }

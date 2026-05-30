@@ -27,12 +27,5 @@
       "16": "icons/icon16.png",
       "48": "icons/icon48.png"
     }
-  },
-  "content_scripts": [
-    {
-      "matches": ["https://www.youtube.com/watch*"],
-      "js": ["content/content.js"],
-      "run_at": "document_idle"
-    }
-  ]
+  }
 }
