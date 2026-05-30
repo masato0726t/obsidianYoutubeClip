@@ -60,7 +60,8 @@ tags:
 
 1. このリポジトリをクローンまたはZIPでダウンロード
    ```bash
-   git clone https://github.com/YOUR_USERNAME/obsidianYoutubeClip.git
+   git clone https://github.com/masato0726t/obsidianYoutubeClip.git
+   cd obsidianYoutubeClip
    ```
 2. Chromeで `chrome://extensions/` を開く
 3. 右上の **「デベロッパーモード」** をオン
@@ -139,19 +140,25 @@ npm run test:coverage
 
 ```
 obsidianYoutubeClip/
-├── manifest.json              # Chrome拡張機能の設定（Manifest V3）
+├── manifest.json               # Chrome拡張機能の設定（Manifest V3）
+├── icons/
+│   ├── icon16.png              # npm run icons で生成
+│   ├── icon48.png
+│   └── icon128.png
 ├── src/
-│   └── utils.js               # 純粋関数（テスト可能なビジネスロジック）
+│   └── utils.js                # 純粋関数（テスト可能なビジネスロジック）
 ├── content/
-│   └── content.js             # YouTubeページから動画情報・字幕URLを取得
+│   └── content.js              # YouTubeページから動画情報・字幕URLを取得
 ├── background/
-│   └── service-worker.js      # 字幕データの取得・パース・Obsidian APIへの保存
+│   └── service-worker.js       # 字幕データの取得・パース・Obsidian APIへの保存
 ├── popup/
-│   ├── popup.html             # ポップアップUI
-│   ├── popup.js               # ポップアップのロジック
-│   └── popup.css              # スタイル
+│   ├── popup.html              # ポップアップUI
+│   ├── popup.js                # ポップアップのロジック
+│   └── popup.css               # スタイル
+├── scripts/
+│   └── generate-icons.js       # アイコンPNG生成スクリプト（追加パッケージ不要）
 └── tests/
-    └── utils.test.js          # Jestテスト（50ケース）
+    └── utils.test.js           # Jestテスト（50ケース）
 ```
 
 ## ライセンス

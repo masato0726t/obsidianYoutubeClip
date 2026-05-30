@@ -4,6 +4,7 @@
   "description": "YouTubeの動画を文字起こしして自動的にObsidianへ保存するChrome拡張機能",
   "private": true,
   "scripts": {
+    "icons": "node scripts/generate-icons.js",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage"
