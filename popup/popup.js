@@ -303,127 +303,180 @@ async function handleVaultDelete() {
 
 // ---- 字幕フェッチ（YouTubeページの MAIN world で実行） ----
 // 外部スコープを参照してはならない（executeScript でシリアライズされるため）。
-//
-// 戦略1: get_transcript Inner Tube API（Transcript パネルと同じ正規API）
-//   - ytcfg から APIキー・VisitorData・ClientVersion を取得してリクエスト
-//   - credentials:'include' でクッキーを付与
-// 戦略2: XHR で timedtext URL を複数パターン試行
-// 戦略3: ウォッチページHTMLから新鮮な字幕URLを取得して再試行
+// 診断情報を diag オブジェクトに蓄積し、全失敗時にエラーメッセージへ含める。
 function _fetchCaptionTextFromPage(captionUrl, videoId, languageCode, isAsr) {
+  var diag = {};
 
-  // ---- Inner Tube get_transcript ----
-  function fetchViaInnerTube() {
-    const cfg = (window.ytcfg && window.ytcfg.data_) || {};
-    const apiKey      = cfg.INNERTUBE_API_KEY || "";
-    const visitorData = cfg.VISITOR_DATA || "";
-    const clientVer   = cfg.INNERTUBE_CLIENT_VERSION || "2.20240930.00.00";
-
-    // protobuf: outer{field1: inner{field1: videoId}, field2: ""}
-    const vBytes = videoId.split("").map(function(c) { return c.charCodeAt(0); });
-    const inner  = [0x0a, vBytes.length].concat(vBytes);
-    const outer  = [0x0a, inner.length].concat(inner).concat([0x12, 0x00]);
-    const params = btoa(String.fromCharCode.apply(null, outer));
-
-    const headers = { "Content-Type": "application/json" };
-    if (visitorData) headers["X-Goog-Visitor-Id"] = visitorData;
-
-    const path = "/youtubei/v1/get_transcript" + (apiKey ? "?key=" + apiKey : "");
-
-    return fetch("https://www.youtube.com" + path, {
-      method: "POST",
-      headers: headers,
-      credentials: "include",
-      body: JSON.stringify({
-        context: { client: { clientName: "WEB", clientVersion: clientVer, hl: languageCode || "ja", gl: "JP" } },
-        params: params
-      })
-    }).then(function(res) {
-      return res.ok ? res.json() : null;
-    }).then(function(data) {
-      if (!data) return null;
-      const segs = (
-        data.actions && data.actions[0] &&
-        data.actions[0].updateEngagementPanelAction &&
-        data.actions[0].updateEngagementPanelAction.content &&
-        data.actions[0].updateEngagementPanelAction.content.transcriptRenderer &&
-        data.actions[0].updateEngagementPanelAction.content.transcriptRenderer.content &&
-        data.actions[0].updateEngagementPanelAction.content.transcriptRenderer.content.transcriptSearchPanelRenderer &&
-        data.actions[0].updateEngagementPanelAction.content.transcriptRenderer.content.transcriptSearchPanelRenderer.body &&
-        data.actions[0].updateEngagementPanelAction.content.transcriptRenderer.content.transcriptSearchPanelRenderer.body.transcriptSegmentListRenderer &&
-        data.actions[0].updateEngagementPanelAction.content.transcriptRenderer.content.transcriptSearchPanelRenderer.body.transcriptSegmentListRenderer.initialSegments
-      ) || [];
-      if (!segs.length) return null;
-      const lines = [];
-      for (let i = 0; i < segs.length; i++) {
-        const r = segs[i] && segs[i].transcriptSegmentRenderer;
-        if (!r) continue;
-        const secs = Math.floor((parseInt(r.startMs) || 0) / 1000);
-        const time = Math.floor(secs / 60) + ":" + ("0" + (secs % 60)).slice(-2);
-        const runs = (r.snippet && r.snippet.runs) || [];
-        const text = runs.map(function(x) { return x.text || ""; }).join("").replace(/\n/g, " ").trim();
-        if (text) lines.push("[" + time + "] " + text);
-      }
-      return lines.length ? lines.join("\n") : null;
-    }).catch(function() { return null; });
-  }
-
-  // ---- XHR ヘルパー ----
+  // ---- XHR ヘルパー（fetch の代わりに使用 → SW インターセプトを回避） ----
   function xhrGet(url) {
-    return new Promise(function(resolve) {
-      const xhr = new XMLHttpRequest();
+    return new Promise(function (resolve) {
+      var xhr = new XMLHttpRequest();
       xhr.open("GET", url, true);
       xhr.timeout = 10000;
-      xhr.onload  = function() { resolve(this.status === 200 ? (this.responseText || "") : ""); };
-      xhr.onerror = xhr.ontimeout = function() { resolve(""); };
+      xhr.onload = function () { resolve({ s: this.status, t: this.responseText || "" }); };
+      xhr.onerror = xhr.ontimeout = function () { resolve({ s: 0, t: "" }); };
       xhr.send();
     });
   }
 
-  function norm(u) { return u.startsWith("//") ? "https:" + u : u; }
-  const base = norm(captionUrl);
-  const kind = isAsr ? "&kind=asr" : "";
-  let withFmt = base;
-  try { const u = new URL(base); u.searchParams.set("fmt", "json3"); withFmt = u.toString(); } catch(_) {}
+  function xhrPost(url, headers, bodyStr) {
+    return new Promise(function (resolve) {
+      var xhr = new XMLHttpRequest();
+      xhr.open("POST", url, true);
+      xhr.timeout = 15000;
+      Object.keys(headers).forEach(function (k) { xhr.setRequestHeader(k, headers[k]); });
+      xhr.onload = function () { resolve({ s: this.status, t: this.responseText || "" }); };
+      xhr.onerror = xhr.ontimeout = function () { resolve({ s: 0, t: "" }); };
+      xhr.send(bodyStr);
+    });
+  }
 
-  const candidates = [
+  function norm(u) { return u.startsWith("//") ? "https:" + u : u; }
+
+  // ---- 戦略1: get_transcript Inner Tube API (XHR POST) ----
+  function step1_innerTube() {
+    var cfg = (window.ytcfg && window.ytcfg.data_) || {};
+    var apiKey     = cfg.INNERTUBE_API_KEY || "";
+    var visitorData= cfg.VISITOR_DATA || "";
+    var clientVer  = cfg.INNERTUBE_CLIENT_VERSION || "2.20240930.00.00";
+    diag.cfg = !!(apiKey || visitorData);
+
+    // ytInitialData の engagement panel から YouTube 自身が使う params を抽出
+    var params = null;
+    try {
+      var panels = (window.ytInitialData && window.ytInitialData.engagementPanels) || [];
+      for (var i = 0; i < panels.length; i++) {
+        var sec = panels[i] && panels[i].engagementPanelSectionListRenderer;
+        if (!sec) continue;
+        var isTranscript =
+          sec.targetId === "engagement-panel-searchable-transcript" ||
+          (sec.panelIdentifier && sec.panelIdentifier.indexOf("transcript") !== -1);
+        if (!isTranscript) continue;
+        // 事前ロード済みの場合
+        var tr = sec.content && sec.content.transcriptRenderer &&
+          sec.content.transcriptRenderer.content &&
+          sec.content.transcriptRenderer.content.transcriptSearchPanelRenderer;
+        if (tr) { params = "__preloaded__"; break; }
+        // continuation の場合
+        var cont = sec.content && sec.content.continuationItemRenderer;
+        var ep   = cont && cont.continuationEndpoint && cont.continuationEndpoint.getTranscriptEndpoint;
+        if (ep && ep.params) { params = ep.params; break; }
+      }
+    } catch (_) {}
+    diag.params = params ? params.substring(0, 20) : "none";
+
+    if (params === "__preloaded__") {
+      // 既に DOM にデータがある場合はそこから読む（step4 へ委譲）
+      return Promise.resolve(null);
+    }
+
+    // params が取れなければ手動 protobuf エンコード
+    if (!params) {
+      var vb = videoId.split("").map(function (c) { return c.charCodeAt(0); });
+      var inner = [0x0a, vb.length].concat(vb);
+      var outer = [0x0a, inner.length].concat(inner).concat([0x12, 0x00]);
+      params = btoa(String.fromCharCode.apply(null, outer));
+    }
+
+    var headers = { "Content-Type": "application/json" };
+    if (visitorData) headers["X-Goog-Visitor-Id"] = visitorData;
+    var path = "/youtubei/v1/get_transcript" + (apiKey ? "?key=" + apiKey : "");
+    var bodyStr = JSON.stringify({
+      context: { client: { clientName: "WEB", clientVersion: clientVer, hl: languageCode || "ja", gl: "JP" } },
+      params: params
+    });
+
+    return xhrPost("https://www.youtube.com" + path, headers, bodyStr).then(function (r) {
+      diag.it = r.s + ":" + r.t.length;
+      if (r.s !== 200 || !r.t) return null;
+      try {
+        var data = JSON.parse(r.t);
+        var segs = (
+          data.actions && data.actions[0] &&
+          data.actions[0].updateEngagementPanelAction &&
+          data.actions[0].updateEngagementPanelAction.content &&
+          data.actions[0].updateEngagementPanelAction.content.transcriptRenderer &&
+          data.actions[0].updateEngagementPanelAction.content.transcriptRenderer.content &&
+          data.actions[0].updateEngagementPanelAction.content.transcriptRenderer.content.transcriptSearchPanelRenderer &&
+          data.actions[0].updateEngagementPanelAction.content.transcriptRenderer.content.transcriptSearchPanelRenderer.body &&
+          data.actions[0].updateEngagementPanelAction.content.transcriptRenderer.content.transcriptSearchPanelRenderer.body.transcriptSegmentListRenderer &&
+          data.actions[0].updateEngagementPanelAction.content.transcriptRenderer.content.transcriptSearchPanelRenderer.body.transcriptSegmentListRenderer.initialSegments
+        ) || [];
+        diag.segs = segs.length;
+        if (!segs.length) return null;
+        var lines = [];
+        for (var j = 0; j < segs.length; j++) {
+          var seg = segs[j] && segs[j].transcriptSegmentRenderer;
+          if (!seg) continue;
+          var secs = Math.floor((parseInt(seg.startMs) || 0) / 1000);
+          var time = Math.floor(secs / 60) + ":" + ("0" + (secs % 60)).slice(-2);
+          var runs = (seg.snippet && seg.snippet.runs) || [];
+          var txt  = runs.map(function (x) { return x.text || ""; }).join("").replace(/\n/g, " ").trim();
+          if (txt) lines.push("[" + time + "] " + txt);
+        }
+        return lines.length ? lines.join("\n") : null;
+      } catch (_) { return null; }
+    }).catch(function () { return null; });
+  }
+
+  // ---- 戦略2: timedtext XHR（複数 URL パターン） ----
+  var base = norm(captionUrl);
+  var kind = isAsr ? "&kind=asr" : "";
+  var withFmt = base;
+  try { var _u = new URL(base); _u.searchParams.set("fmt", "json3"); withFmt = _u.toString(); } catch (_) {}
+  var candidates = [
     withFmt, base,
     "https://www.youtube.com/api/timedtext?v=" + videoId + "&lang=" + languageCode + kind + "&fmt=json3",
     "https://www.youtube.com/api/timedtext?v=" + videoId + "&lang=" + languageCode + kind,
   ];
 
-  function tryXhr(i) {
-    if (i >= candidates.length) return tryHtmlFallback();
-    return xhrGet(candidates[i]).then(function(text) {
-      return (text && text.trim()) ? { text: text } : tryXhr(i + 1);
+  function step2_timedtext(i) {
+    if (i >= candidates.length) return Promise.resolve(null);
+    return xhrGet(candidates[i]).then(function (r) {
+      diag["x" + i] = r.s + ":" + r.t.length;
+      if (r.s === 200 && r.t.trim()) return r.t;
+      return step2_timedtext(i + 1);
     });
   }
 
-  function tryHtmlFallback() {
-    return xhrGet("https://www.youtube.com/watch?v=" + videoId + "&hl=ja").then(function(html) {
-      if (!html) return { error: "字幕データを取得できませんでした" };
-      const m = html.match(/"captionTracks":(\[.*?\]),"audioTracks"/);
-      if (!m) return { error: "ページ内に字幕情報が見つかりませんでした" };
-      let tracks;
-      try { tracks = JSON.parse(m[1]); } catch(_) { return { error: "字幕データの解析に失敗しました" }; }
-      const track =
-        tracks.find(function(t) { return t.languageCode === languageCode && (!isAsr || t.kind === "asr"); }) ||
-        tracks.find(function(t) { return t.languageCode === languageCode; }) ||
+  // ---- 戦略3: ウォッチページ HTML から新鮮な URL を再取得 ----
+  function step3_htmlFallback() {
+    return xhrGet("https://www.youtube.com/watch?v=" + videoId + "&hl=ja").then(function (r) {
+      diag.html = r.s + ":" + r.t.length;
+      if (!r.t) return null;
+      var m = r.t.match(/"captionTracks":(\[.*?\]),"audioTracks"/);
+      if (!m) return null;
+      var tracks;
+      try { tracks = JSON.parse(m[1]); } catch (_) { return null; }
+      var track =
+        tracks.find(function (t) { return t.languageCode === languageCode && (!isAsr || t.kind === "asr"); }) ||
+        tracks.find(function (t) { return t.languageCode === languageCode; }) ||
         tracks[0];
-      if (!track || !track.baseUrl) return { error: "字幕トラックが見つかりませんでした" };
-      let freshUrl = norm(track.baseUrl);
-      try { const u = new URL(freshUrl); u.searchParams.set("fmt", "json3"); freshUrl = u.toString(); } catch(_) {}
-      return xhrGet(freshUrl).then(function(t) {
-        if (t && t.trim()) return { text: t };
-        return xhrGet(norm(track.baseUrl)).then(function(t2) {
-          return (t2 && t2.trim()) ? { text: t2 } : { error: "字幕データを取得できませんでした" };
+      if (!track || !track.baseUrl) return null;
+      var freshJson = norm(track.baseUrl);
+      try { var _u2 = new URL(freshJson); _u2.searchParams.set("fmt", "json3"); freshJson = _u2.toString(); } catch (_) {}
+      return xhrGet(freshJson).then(function (r2) {
+        diag.fresh = r2.s + ":" + r2.t.length;
+        if (r2.s === 200 && r2.t.trim()) return r2.t;
+        return xhrGet(norm(track.baseUrl)).then(function (r3) {
+          diag.freshXml = r3.s + ":" + r3.t.length;
+          return (r3.s === 200 && r3.t.trim()) ? r3.t : null;
         });
       });
     });
   }
 
-  // Inner Tube → XHR → HTML の順で試みる
-  return fetchViaInnerTube().then(function(text) {
-    return text ? { text: text } : tryXhr(0);
+  // ---- 全戦略を順番に実行 ----
+  return step1_innerTube().then(function (text) {
+    if (text) return { text: text };
+    return step2_timedtext(0).then(function (text2) {
+      if (text2) return { text: text2 };
+      return step3_htmlFallback().then(function (text3) {
+        if (text3) return { text: text3 };
+        var parts = Object.keys(diag).map(function (k) { return k + "=" + diag[k]; });
+        return { error: "字幕を取得できませんでした [" + parts.join(" ") + "]" };
+      });
+    });
   });
 }
 
