@@ -304,20 +304,14 @@ async function handleVaultDelete() {
 // ---- 字幕フェッチ（YouTubeページの MAIN world で実行） ----
 // 外部スコープを参照してはならない（executeScript でシリアライズされるため）。
 // 診断情報を diag オブジェクトに蓄積し、全失敗時にエラーメッセージへ含める。
+//
+// timedtext API は近年 PoToken を要求し空ボディを返すため当てにできない。
+// 戦略1: get_transcript Inner Tube API（SAPISIDHASH 認証付き）
+// 戦略2: DOM 文字起こしパネル方式（PoToken・認証と無縁の本命フォールバック）
 function _fetchCaptionTextFromPage(captionUrl, videoId, languageCode, isAsr) {
   var diag = {};
 
-  // ---- XHR ヘルパー（fetch の代わりに使用 → SW インターセプトを回避） ----
-  function xhrGet(url) {
-    return new Promise(function (resolve) {
-      var xhr = new XMLHttpRequest();
-      xhr.open("GET", url, true);
-      xhr.timeout = 10000;
-      xhr.onload = function () { resolve({ s: this.status, t: this.responseText || "" }); };
-      xhr.onerror = xhr.ontimeout = function () { resolve({ s: 0, t: "" }); };
-      xhr.send();
-    });
-  }
+  function delay(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
   function xhrPost(url, headers, bodyStr) {
     return new Promise(function (resolve) {
@@ -331,9 +325,41 @@ function _fetchCaptionTextFromPage(captionUrl, videoId, languageCode, isAsr) {
     });
   }
 
-  function norm(u) { return u.startsWith("//") ? "https:" + u : u; }
+  // SHA-1 を hex 文字列で返す（SAPISIDHASH 生成用）
+  function sha1hex(str) {
+    return crypto.subtle
+      .digest("SHA-1", new TextEncoder().encode(str))
+      .then(function (buf) {
+        var bytes = new Uint8Array(buf);
+        var hex = "";
+        for (var i = 0; i < bytes.length; i++) hex += ("0" + bytes[i].toString(16)).slice(-2);
+        return hex;
+      });
+  }
 
-  // ---- 戦略1: get_transcript Inner Tube API (XHR POST) ----
+  // SAPISIDHASH 認証ヘッダーを生成（取得できなければ null）
+  function buildAuthHeader() {
+    var origin = "https://www.youtube.com";
+    var cookies = document.cookie.split("; ");
+    var sapisid = "";
+    for (var ci = 0; ci < cookies.length; ci++) {
+      var eq = cookies[ci].indexOf("=");
+      var name = cookies[ci].slice(0, eq);
+      var val = cookies[ci].slice(eq + 1);
+      if (name === "SAPISID" || name === "__Secure-3PAPISID") {
+        sapisid = val;
+        if (name === "SAPISID") break; // SAPISID を優先
+      }
+    }
+    if (!sapisid) { diag.sapisid = "none"; return Promise.resolve(null); }
+    diag.sapisid = "ok";
+    var ts = Math.floor(Date.now() / 1000);
+    return sha1hex(ts + " " + sapisid + " " + origin).then(function (hash) {
+      return { value: "SAPISIDHASH " + ts + "_" + hash, origin: origin };
+    });
+  }
+
+  // ---- 戦略1: get_transcript Inner Tube API ----
   function step1_innerTube() {
     var cfg = (window.ytcfg && window.ytcfg.data_) || {};
     var apiKey     = cfg.INNERTUBE_API_KEY || "";
@@ -352,23 +378,11 @@ function _fetchCaptionTextFromPage(captionUrl, videoId, languageCode, isAsr) {
           sec.targetId === "engagement-panel-searchable-transcript" ||
           (sec.panelIdentifier && sec.panelIdentifier.indexOf("transcript") !== -1);
         if (!isTranscript) continue;
-        // 事前ロード済みの場合
-        var tr = sec.content && sec.content.transcriptRenderer &&
-          sec.content.transcriptRenderer.content &&
-          sec.content.transcriptRenderer.content.transcriptSearchPanelRenderer;
-        if (tr) { params = "__preloaded__"; break; }
-        // continuation の場合
         var cont = sec.content && sec.content.continuationItemRenderer;
         var ep   = cont && cont.continuationEndpoint && cont.continuationEndpoint.getTranscriptEndpoint;
         if (ep && ep.params) { params = ep.params; break; }
       }
     } catch (_) {}
-    diag.params = params ? params.substring(0, 20) : "none";
-
-    if (params === "__preloaded__") {
-      // 既に DOM にデータがある場合はそこから読む（step4 へ委譲）
-      return Promise.resolve(null);
-    }
 
     // params が取れなければ手動 protobuf エンコード
     if (!params) {
@@ -376,106 +390,113 @@ function _fetchCaptionTextFromPage(captionUrl, videoId, languageCode, isAsr) {
       var inner = [0x0a, vb.length].concat(vb);
       var outer = [0x0a, inner.length].concat(inner).concat([0x12, 0x00]);
       params = btoa(String.fromCharCode.apply(null, outer));
+      diag.params = "manual";
+    } else {
+      diag.params = "panel";
     }
 
-    var headers = { "Content-Type": "application/json" };
-    if (visitorData) headers["X-Goog-Visitor-Id"] = visitorData;
-    var path = "/youtubei/v1/get_transcript" + (apiKey ? "?key=" + apiKey : "");
-    var bodyStr = JSON.stringify({
-      context: { client: { clientName: "WEB", clientVersion: clientVer, hl: languageCode || "ja", gl: "JP" } },
-      params: params
-    });
+    return buildAuthHeader().then(function (auth) {
+      var headers = { "Content-Type": "application/json" };
+      if (visitorData) headers["X-Goog-Visitor-Id"] = visitorData;
+      if (auth) {
+        headers["Authorization"] = auth.value;
+        headers["X-Origin"] = auth.origin;
+      }
+      var path = "/youtubei/v1/get_transcript" + (apiKey ? "?key=" + apiKey : "");
+      var bodyStr = JSON.stringify({
+        context: { client: { clientName: "WEB", clientVersion: clientVer, hl: languageCode || "ja", gl: "JP" } },
+        params: params
+      });
 
-    return xhrPost("https://www.youtube.com" + path, headers, bodyStr).then(function (r) {
-      diag.it = r.s + ":" + r.t.length;
-      if (r.s !== 200 || !r.t) return null;
-      try {
-        var data = JSON.parse(r.t);
-        var segs = (
-          data.actions && data.actions[0] &&
-          data.actions[0].updateEngagementPanelAction &&
-          data.actions[0].updateEngagementPanelAction.content &&
-          data.actions[0].updateEngagementPanelAction.content.transcriptRenderer &&
-          data.actions[0].updateEngagementPanelAction.content.transcriptRenderer.content &&
-          data.actions[0].updateEngagementPanelAction.content.transcriptRenderer.content.transcriptSearchPanelRenderer &&
-          data.actions[0].updateEngagementPanelAction.content.transcriptRenderer.content.transcriptSearchPanelRenderer.body &&
-          data.actions[0].updateEngagementPanelAction.content.transcriptRenderer.content.transcriptSearchPanelRenderer.body.transcriptSegmentListRenderer &&
-          data.actions[0].updateEngagementPanelAction.content.transcriptRenderer.content.transcriptSearchPanelRenderer.body.transcriptSegmentListRenderer.initialSegments
-        ) || [];
-        diag.segs = segs.length;
-        if (!segs.length) return null;
-        var lines = [];
-        for (var j = 0; j < segs.length; j++) {
-          var seg = segs[j] && segs[j].transcriptSegmentRenderer;
-          if (!seg) continue;
-          var secs = Math.floor((parseInt(seg.startMs) || 0) / 1000);
-          var time = Math.floor(secs / 60) + ":" + ("0" + (secs % 60)).slice(-2);
-          var runs = (seg.snippet && seg.snippet.runs) || [];
-          var txt  = runs.map(function (x) { return x.text || ""; }).join("").replace(/\n/g, " ").trim();
-          if (txt) lines.push("[" + time + "] " + txt);
-        }
-        return lines.length ? lines.join("\n") : null;
-      } catch (_) { return null; }
+      return xhrPost("https://www.youtube.com" + path, headers, bodyStr).then(function (r) {
+        diag.it = r.s + ":" + r.t.length;
+        if (r.s !== 200 || !r.t) return null;
+        try {
+          var data = JSON.parse(r.t);
+          var a = data.actions && data.actions[0] && data.actions[0].updateEngagementPanelAction;
+          var c = a && a.content && a.content.transcriptRenderer && a.content.transcriptRenderer.content;
+          var panel = c && c.transcriptSearchPanelRenderer;
+          var listR = panel && panel.body && panel.body.transcriptSegmentListRenderer;
+          var segs = (listR && listR.initialSegments) || [];
+          diag.segs = segs.length;
+          if (!segs.length) return null;
+          var lines = [];
+          for (var j = 0; j < segs.length; j++) {
+            var seg = segs[j] && segs[j].transcriptSegmentRenderer;
+            if (!seg) continue;
+            var secs = Math.floor((parseInt(seg.startMs) || 0) / 1000);
+            var time = Math.floor(secs / 60) + ":" + ("0" + (secs % 60)).slice(-2);
+            var runs = (seg.snippet && seg.snippet.runs) || [];
+            var txt  = runs.map(function (x) { return x.text || ""; }).join("").replace(/\n/g, " ").trim();
+            if (txt) lines.push("[" + time + "] " + txt);
+          }
+          return lines.length ? lines.join("\n") : null;
+        } catch (_) { return null; }
+      });
     }).catch(function () { return null; });
   }
 
-  // ---- 戦略2: timedtext XHR（複数 URL パターン） ----
-  var base = norm(captionUrl);
-  var kind = isAsr ? "&kind=asr" : "";
-  var withFmt = base;
-  try { var _u = new URL(base); _u.searchParams.set("fmt", "json3"); withFmt = _u.toString(); } catch (_) {}
-  var candidates = [
-    withFmt, base,
-    "https://www.youtube.com/api/timedtext?v=" + videoId + "&lang=" + languageCode + kind + "&fmt=json3",
-    "https://www.youtube.com/api/timedtext?v=" + videoId + "&lang=" + languageCode + kind,
-  ];
-
-  function step2_timedtext(i) {
-    if (i >= candidates.length) return Promise.resolve(null);
-    return xhrGet(candidates[i]).then(function (r) {
-      diag["x" + i] = r.s + ":" + r.t.length;
-      if (r.s === 200 && r.t.trim()) return r.t;
-      return step2_timedtext(i + 1);
-    });
+  // ---- 戦略2: DOM 文字起こしパネル方式（本命フォールバック） ----
+  function readTranscriptSegments() {
+    var nodes = document.querySelectorAll("ytd-transcript-segment-renderer");
+    if (!nodes.length) return null;
+    var lines = [];
+    for (var i = 0; i < nodes.length; i++) {
+      var tsEl = nodes[i].querySelector(".segment-timestamp");
+      var txEl = nodes[i].querySelector(".segment-text") ||
+                 nodes[i].querySelector("yt-formatted-string.segment-text");
+      var time = tsEl ? tsEl.textContent.trim() : "";
+      var txt  = txEl ? txEl.textContent.replace(/\s+/g, " ").trim() : "";
+      if (txt) lines.push((time ? "[" + time + "] " : "") + txt);
+    }
+    return lines.length ? lines.join("\n") : null;
   }
 
-  // ---- 戦略3: ウォッチページ HTML から新鮮な URL を再取得 ----
-  function step3_htmlFallback() {
-    return xhrGet("https://www.youtube.com/watch?v=" + videoId + "&hl=ja").then(function (r) {
-      diag.html = r.s + ":" + r.t.length;
-      if (!r.t) return null;
-      var m = r.t.match(/"captionTracks":(\[.*?\]),"audioTracks"/);
-      if (!m) return null;
-      var tracks;
-      try { tracks = JSON.parse(m[1]); } catch (_) { return null; }
-      var track =
-        tracks.find(function (t) { return t.languageCode === languageCode && (!isAsr || t.kind === "asr"); }) ||
-        tracks.find(function (t) { return t.languageCode === languageCode; }) ||
-        tracks[0];
-      if (!track || !track.baseUrl) return null;
-      var freshJson = norm(track.baseUrl);
-      try { var _u2 = new URL(freshJson); _u2.searchParams.set("fmt", "json3"); freshJson = _u2.toString(); } catch (_) {}
-      return xhrGet(freshJson).then(function (r2) {
-        diag.fresh = r2.s + ":" + r2.t.length;
-        if (r2.s === 200 && r2.t.trim()) return r2.t;
-        return xhrGet(norm(track.baseUrl)).then(function (r3) {
-          diag.freshXml = r3.s + ":" + r3.t.length;
-          return (r3.s === 200 && r3.t.trim()) ? r3.t : null;
-        });
-      });
-    });
+  // 「文字起こしを表示」ボタンをテキスト/aria-label マッチで探してクリック
+  function clickShowTranscript() {
+    // 説明欄が畳まれている場合は展開
+    var expand = document.querySelector("#description #expand") ||
+                 document.querySelector("tp-yt-paper-button#expand");
+    if (expand) { try { expand.click(); } catch (_) {} }
+
+    var sels = "button, tp-yt-paper-button, yt-button-shape, ytd-button-renderer, a";
+    var els = document.querySelectorAll(sels);
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      var label = ((el.getAttribute && el.getAttribute("aria-label")) || "") + " " +
+                  (el.textContent || "");
+      if (/文字起こし|文字起こしを表示|transcript/i.test(label)) {
+        try { el.click(); return true; } catch (_) {}
+      }
+    }
+    return false;
   }
 
-  // ---- 全戦略を順番に実行 ----
+  function step2_dom() {
+    // 既にパネルが開いていれば即読み取り
+    var immediate = readTranscriptSegments();
+    if (immediate) { diag.dom = "preloaded"; return Promise.resolve(immediate); }
+
+    var clicked = clickShowTranscript();
+    diag.dom = clicked ? "clicked" : "no-button";
+
+    // セグメント出現を最大 ~6 秒ポーリング（200ms × 30）
+    function poll(attempt) {
+      var text = readTranscriptSegments();
+      if (text) { diag.domSegs = text.split("\n").length; return Promise.resolve(text); }
+      if (attempt >= 30) return Promise.resolve(null);
+      return delay(200).then(function () { return poll(attempt + 1); });
+    }
+    return poll(0);
+  }
+
+  // ---- 戦略を順番に実行: API → DOM ----
   return step1_innerTube().then(function (text) {
     if (text) return { text: text };
-    return step2_timedtext(0).then(function (text2) {
+    return step2_dom().then(function (text2) {
       if (text2) return { text: text2 };
-      return step3_htmlFallback().then(function (text3) {
-        if (text3) return { text: text3 };
-        var parts = Object.keys(diag).map(function (k) { return k + "=" + diag[k]; });
-        return { error: "字幕を取得できませんでした [" + parts.join(" ") + "]" };
-      });
+      var parts = Object.keys(diag).map(function (k) { return k + "=" + diag[k]; });
+      return { error: "字幕を取得できませんでした [" + parts.join(" ") + "]" };
     });
   });
 }
@@ -505,7 +526,7 @@ async function handleSave() {
   saveBtn.disabled = true;
   saveBtnText.textContent = "保存中...";
   hideStatus("status");
-  showStatus("status", "字幕データを取得中...", "info");
+  showStatus("status", "字幕データを取得中...（数秒かかる場合があります）", "info");
 
   try {
     // 1. YouTubeページのコンテキスト（Cookie付き）で字幕テキストを取得
@@ -536,9 +557,14 @@ async function handleSave() {
       return;
     }
 
-    // 2. JSON3 → XML フォールバックでパース（utils.js の関数を使用）
+    // 2. パース
+    //    戦略1(API)/戦略2(DOM) は [m:ss] text 形式の完成テキストを返すためそのまま使う。
+    //    生の JSON3/XML が来た場合のみ utils.js のパーサにかける。
     let transcript;
-    if (rawText.trimStart().startsWith("{")) {
+    const trimmed = rawText.trimStart();
+    if (/^\[\d+:\d{2}/.test(trimmed)) {
+      transcript = rawText;
+    } else if (trimmed.startsWith("{")) {
       try {
         transcript = parseTranscriptJson3(JSON.parse(rawText));
       } catch {
