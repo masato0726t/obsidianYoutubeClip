@@ -189,6 +189,7 @@ function _extractVideoInfoFromPage() {
         languageCode: t.languageCode,
         name: t.name?.simpleText || t.languageCode,
         baseUrl: t.baseUrl,
+        isAsr: t.kind === "asr",
       })),
     };
   } catch {
@@ -301,17 +302,50 @@ async function handleVaultDelete() {
 }
 
 // ---- 字幕フェッチ（YouTubeページの MAIN world で実行 → Cookie が使われる） ----
-// この関数はシリアライズされてページ内で実行されるため外部スコープを参照してはならない
-function _fetchCaptionTextFromPage(captionUrl) {
-  const rawUrl = captionUrl.startsWith("//") ? `https:${captionUrl}` : captionUrl;
-  const url = new URL(rawUrl);
-  url.searchParams.set("fmt", "json3");
-  return fetch(url.toString())
-    .then((res) => {
-      if (!res.ok) return { error: `字幕の取得に失敗しました (HTTP ${res.status})` };
-      return res.text().then((text) => ({ text }));
-    })
-    .catch((err) => ({ error: err.message }));
+// この関数はシリアライズされてページ内で実行されるため外部スコープを参照してはならない。
+// 自動生成字幕(ASR)を含む複数パターンを順番に試してテキストを返す。
+async function _fetchCaptionTextFromPage(captionUrl, videoId, languageCode, isAsr) {
+  const normalize = (u) => (u.startsWith("//") ? "https:" + u : u);
+  const base = normalize(captionUrl);
+
+  // 試行するURLを優先順で列挙
+  const candidates = [];
+
+  // 1. baseUrl + fmt=json3
+  try {
+    const u = new URL(base);
+    u.searchParams.set("fmt", "json3");
+    candidates.push(u.toString());
+  } catch (_) { /* 無効なURLはスキップ */ }
+
+  // 2. baseUrl そのまま（デフォルトXML）
+  candidates.push(base);
+
+  // 3. シンプルURL + json3（ASRフラグ付き）
+  const kindParam = isAsr ? "&kind=asr" : "";
+  candidates.push(
+    "https://www.youtube.com/api/timedtext?v=" + videoId +
+    "&lang=" + languageCode + kindParam + "&fmt=json3"
+  );
+
+  // 4. シンプルURL デフォルト形式（XML）
+  candidates.push(
+    "https://www.youtube.com/api/timedtext?v=" + videoId +
+    "&lang=" + languageCode + kindParam
+  );
+
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const text = await res.text();
+      if (text && text.trim()) return { text, usedUrl: url };
+    } catch (_) {
+      continue;
+    }
+  }
+
+  return { error: "字幕データを取得できませんでした（すべての取得方法が失敗しました）" };
 }
 
 // ---- Obsidianへ保存 ----
@@ -343,12 +377,19 @@ async function handleSave() {
 
   try {
     // 1. YouTubeページのコンテキスト（Cookie付き）で字幕テキストを取得
+    //    ASR（自動生成）含む複数URLパターンを試みる
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const selectedTrack = videoInfo.captionTracks.find((t) => t.baseUrl === captionUrl);
     const [fetchExec] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       world: "MAIN",
       func: _fetchCaptionTextFromPage,
-      args: [captionUrl],
+      args: [
+        captionUrl,
+        videoInfo.videoId,
+        selectedTrack?.languageCode ?? "",
+        selectedTrack?.isAsr ?? false,
+      ],
     });
 
     const fetchResult = fetchExec?.result;
