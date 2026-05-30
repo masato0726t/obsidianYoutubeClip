@@ -402,11 +402,14 @@ function _fetchCaptionTextFromPage(captionUrl, videoId, languageCode, isAsr) {
         headers["Authorization"] = auth.value;
         headers["X-Origin"] = auth.origin;
       }
+      if (visitorData) {
+        headers["X-Youtube-Client-Name"] = "1";
+        headers["X-Youtube-Client-Version"] = clientVer;
+      }
       var path = "/youtubei/v1/get_transcript" + (apiKey ? "?key=" + apiKey : "");
-      var bodyStr = JSON.stringify({
-        context: { client: { clientName: "WEB", clientVersion: clientVer, hl: languageCode || "ja", gl: "JP" } },
-        params: params
-      });
+      var client = { clientName: "WEB", clientVersion: clientVer, hl: languageCode || "ja", gl: "JP" };
+      if (visitorData) client.visitorData = visitorData;
+      var bodyStr = JSON.stringify({ context: { client: client }, params: params });
 
       return xhrPost("https://www.youtube.com" + path, headers, bodyStr).then(function (r) {
         diag.it = r.s + ":" + r.t.length;
@@ -452,24 +455,43 @@ function _fetchCaptionTextFromPage(captionUrl, videoId, languageCode, isAsr) {
     return lines.length ? lines.join("\n") : null;
   }
 
-  // 「文字起こしを表示」ボタンをテキスト/aria-label マッチで探してクリック
-  function clickShowTranscript() {
-    // 説明欄が畳まれている場合は展開
-    var expand = document.querySelector("#description #expand") ||
-                 document.querySelector("tp-yt-paper-button#expand");
-    if (expand) { try { expand.click(); } catch (_) {} }
-
-    var sels = "button, tp-yt-paper-button, yt-button-shape, ytd-button-renderer, a";
-    var els = document.querySelectorAll(sels);
+  // 「文字起こしを表示」ボタンを優先順位付きで探す（誤クリック防止）
+  function findTranscriptButton() {
+    // 1. 説明欄の transcript セクション内のボタン（最も確実）
+    var sectionBtn = document.querySelector(
+      "ytd-video-description-transcript-section-renderer button, " +
+      "ytd-video-description-transcript-section-renderer ytd-button-renderer"
+    );
+    if (sectionBtn) return sectionBtn;
+    // 2. aria-label の厳密マッチ（ボタン要素に限定）
+    var byAria = document.querySelector(
+      'button[aria-label*="文字起こし"], button[aria-label*="ranscript"], ' +
+      'ytd-button-renderer[aria-label*="文字起こし"], ytd-button-renderer[aria-label*="ranscript"]'
+    );
+    if (byAria) return byAria;
+    // 3. テキストマッチ（ボタン系要素に限定、a要素は除外して誤クリック防止）
+    var els = document.querySelectorAll("button, tp-yt-paper-button, ytd-button-renderer");
     for (var i = 0; i < els.length; i++) {
-      var el = els[i];
-      var label = ((el.getAttribute && el.getAttribute("aria-label")) || "") + " " +
-                  (el.textContent || "");
-      if (/文字起こし|文字起こしを表示|transcript/i.test(label)) {
-        try { el.click(); return true; } catch (_) {}
-      }
+      var label = ((els[i].getAttribute && els[i].getAttribute("aria-label")) || "") + " " +
+                  (els[i].textContent || "");
+      if (/文字起こし|transcript/i.test(label)) return els[i];
     }
-    return false;
+    return null;
+  }
+
+  // 説明欄を展開 → 待機 → 文字起こしボタンをクリック
+  function openTranscriptPanel() {
+    var expand = document.querySelector("#description #expand") ||
+                 document.querySelector("tp-yt-paper-button#expand") ||
+                 document.querySelector("#expand");
+    if (expand) { try { expand.click(); } catch (_) {} }
+    // 展開後に DOM が更新されるのを待ってからボタンを探す
+    return delay(600).then(function () {
+      var btn = findTranscriptButton();
+      diag.dom = btn ? "clicked" : "no-button";
+      if (btn) { try { btn.click(); } catch (_) {} }
+      return !!btn;
+    });
   }
 
   function step2_dom() {
@@ -477,17 +499,16 @@ function _fetchCaptionTextFromPage(captionUrl, videoId, languageCode, isAsr) {
     var immediate = readTranscriptSegments();
     if (immediate) { diag.dom = "preloaded"; return Promise.resolve(immediate); }
 
-    var clicked = clickShowTranscript();
-    diag.dom = clicked ? "clicked" : "no-button";
-
-    // セグメント出現を最大 ~6 秒ポーリング（200ms × 30）
-    function poll(attempt) {
-      var text = readTranscriptSegments();
-      if (text) { diag.domSegs = text.split("\n").length; return Promise.resolve(text); }
-      if (attempt >= 30) return Promise.resolve(null);
-      return delay(200).then(function () { return poll(attempt + 1); });
-    }
-    return poll(0);
+    return openTranscriptPanel().then(function () {
+      // セグメント出現を最大 ~8 秒ポーリング（200ms × 40）
+      function poll(attempt) {
+        var text = readTranscriptSegments();
+        if (text) { diag.domSegs = text.split("\n").length; return Promise.resolve(text); }
+        if (attempt >= 40) return Promise.resolve(null);
+        return delay(200).then(function () { return poll(attempt + 1); });
+      }
+      return poll(0);
+    });
   }
 
   // ---- 戦略を順番に実行: API → DOM ----
