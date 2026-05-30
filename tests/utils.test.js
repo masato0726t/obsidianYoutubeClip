@@ -2,6 +2,7 @@
 
 const {
   parseTranscriptJson3,
+  parseTranscriptXml,
   formatTimestamp,
   formatDuration,
   sanitizeFileName,
@@ -69,6 +70,70 @@ describe("parseTranscriptJson3", () => {
   test("utf8が未定義のセグメントは空文字として扱う", () => {
     const data = { events: [{ tStartMs: 0, segs: [{ utf8: "Hello" }, {}] }] };
     expect(parseTranscriptJson3(data)).toBe("[0:00] Hello");
+  });
+});
+
+// ============================================================
+// parseTranscriptXml
+// ============================================================
+describe("parseTranscriptXml", () => {
+  test("正常なXML字幕をパースする", () => {
+    const xml = `<?xml version="1.0" ?><transcript><text start="0.5" dur="3.9">Hello world</text><text start="5.0" dur="2.0">Second line</text></transcript>`;
+    const result = parseTranscriptXml(xml);
+    expect(result).toBe("[0:00] Hello world\n[0:05] Second line");
+  });
+
+  test("HTMLエンティティをデコードする", () => {
+    const xml = `<transcript><text start="1.0" dur="2.0">Tom &amp; Jerry &lt;3&gt;</text></transcript>`;
+    expect(parseTranscriptXml(xml)).toBe("[0:01] Tom & Jerry <3>");
+  });
+
+  test("&#39; (シングルクォート) をデコードする", () => {
+    const xml = `<transcript><text start="0.0" dur="1.0">it&#39;s fine</text></transcript>`;
+    expect(parseTranscriptXml(xml)).toContain("it's fine");
+  });
+
+  test("&quot; (ダブルクォート) をデコードする", () => {
+    const xml = `<transcript><text start="0.0" dur="1.0">say &quot;hello&quot;</text></transcript>`;
+    expect(parseTranscriptXml(xml)).toContain('say "hello"');
+  });
+
+  test("テキスト内の改行をスペースに変換する", () => {
+    const xml = `<transcript><text start="0.0" dur="1.0">line1\nline2</text></transcript>`;
+    expect(parseTranscriptXml(xml)).toBe("[0:00] line1 line2");
+  });
+
+  test("インラインタグ（<c>など）を除去する", () => {
+    const xml = `<transcript><text start="0.0" dur="1.0"><c>Hello</c> world</text></transcript>`;
+    expect(parseTranscriptXml(xml)).toBe("[0:00] Hello world");
+  });
+
+  test("空のテキスト要素はスキップされる", () => {
+    const xml = `<transcript><text start="0.0" dur="1.0">   </text><text start="2.0" dur="1.0">Valid</text></transcript>`;
+    expect(parseTranscriptXml(xml)).toBe("[0:02] Valid");
+  });
+
+  test("空文字列を渡すと空文字列を返す", () => {
+    expect(parseTranscriptXml("")).toBe("");
+  });
+
+  test("XMLがない文字列を渡すと空文字列を返す", () => {
+    expect(parseTranscriptXml("not xml content")).toBe("");
+  });
+
+  test("1分以上のタイムスタンプを正しくフォーマットする", () => {
+    const xml = `<transcript><text start="90.5" dur="2.0">Later line</text></transcript>`;
+    expect(parseTranscriptXml(xml)).toBe("[1:30] Later line");
+  });
+
+  test("複数行を改行で結合する", () => {
+    const xml = [
+      `<text start="0.0" dur="1.0">First</text>`,
+      `<text start="1.0" dur="1.0">Second</text>`,
+      `<text start="2.0" dur="1.0">Third</text>`,
+    ].join("");
+    const result = parseTranscriptXml(`<transcript>${xml}</transcript>`);
+    expect(result.split("\n")).toHaveLength(3);
   });
 });
 

@@ -111,6 +111,32 @@ ${transcript}
 }
 
 /**
+ * YouTube XML形式の字幕テキストをタイムスタンプ付きテキストに変換する（json3フォールバック用）
+ * @param {string} xmlText
+ * @returns {string}
+ */
+function parseTranscriptXml(xmlText) {
+  const lines = [];
+  const regex = /<text[^>]+start="([^"]+)"[^>]*>([\s\S]*?)<\/text>/g;
+  let match;
+  while ((match = regex.exec(xmlText)) !== null) {
+    const start = parseFloat(match[1]);
+    const text = match[2]
+      .replace(/<[^>]*>/g, "")   // タグ除去を先に行いエンティティを守る
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/\n/g, " ")
+      .trim();
+    if (!text) continue;
+    lines.push(`[${formatTimestamp(Math.floor(start))}] ${text}`);
+  }
+  return lines.join("\n");
+}
+
+/**
  * 字幕トラックを優先言語が先頭になるようにソートする（元の配列を変更しない）
  * @param {Array<{ languageCode: string, name: string, baseUrl: string }>} tracks
  * @param {string} [preferredLang]
@@ -149,6 +175,7 @@ function generateId() {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     parseTranscriptJson3,
+    parseTranscriptXml,
     formatTimestamp,
     formatDuration,
     sanitizeFileName,
