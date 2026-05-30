@@ -1,0 +1,29 @@
+# 依存関係
+node_modules/
+
+# ビルド成果物
+dist/
+build/
+
+# 配布パッケージ
+*.zip
+*.crx
+*.pem
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ログ
+*.log
+npm-debug.log*
+
+# 環境変数（万が一作成した場合）
+.env
+.env.local

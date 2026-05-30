@@ -1,0 +1,14 @@
+{
+  "name": "obsidian-youtube-clip",
+  "version": "1.0.0",
+  "description": "YouTubeの動画を文字起こしして自動的にObsidianへ保存するChrome拡張機能",
+  "private": true,
+  "scripts": {
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}

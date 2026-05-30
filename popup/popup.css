@@ -1,0 +1,367 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  width: 360px;
+  background: #1e1e2e;
+  color: #cdd6f4;
+  font-size: 13px;
+}
+
+.container {
+  padding: 14px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ---- ヘッダー ---- */
+header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #313244;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 15px;
+}
+
+.logo-yt   { color: #f38ba8; }
+.logo-arrow{ color: #6c7086; font-size: 11px; }
+.logo-ob   { color: #cba6f7; }
+
+header h1 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #cba6f7;
+}
+
+/* ---- メッセージ ---- */
+.message {
+  text-align: center;
+  padding: 20px 10px;
+  color: #6c7086;
+  line-height: 1.6;
+}
+
+.message .sub {
+  font-size: 11px;
+  margin-top: 4px;
+  color: #45475a;
+}
+
+/* ---- 動画カード ---- */
+.video-card {
+  background: #181825;
+  border-radius: 8px;
+  padding: 10px 12px;
+  border: 1px solid #313244;
+}
+
+.video-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #cdd6f4;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-bottom: 5px;
+}
+
+.channel-name {
+  font-size: 11px;
+  color: #6c7086;
+}
+
+/* ---- 保存先セクション ---- */
+.dest-section {
+  background: #181825;
+  border: 1px solid #313244;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.dest-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #585b70;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 8px;
+}
+
+.vault-select-row {
+  display: flex;
+  gap: 6px;
+}
+
+.vault-select-row select {
+  flex: 1;
+}
+
+.path-hint {
+  font-size: 10px;
+  color: #45475a;
+  margin-top: 4px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+/* ---- フォーム共通 ---- */
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  gap: 10px;
+}
+
+label {
+  font-size: 10px;
+  color: #a6adc8;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+select,
+input[type="text"],
+input[type="password"],
+input[type="number"] {
+  width: 100%;
+  padding: 7px 9px;
+  background: #181825;
+  border: 1px solid #313244;
+  border-radius: 6px;
+  color: #cdd6f4;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+select:focus,
+input:focus {
+  border-color: #cba6f7;
+}
+
+select option {
+  background: #1e1e2e;
+}
+
+/* ---- プライマリボタン ---- */
+.primary-btn {
+  width: 100%;
+  padding: 10px;
+  background: #cba6f7;
+  color: #1e1e2e;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.primary-btn:hover:not(:disabled) { background: #b895e8; }
+.primary-btn:active:not(:disabled) { transform: scale(0.98); }
+.primary-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ---- セカンダリボタン ---- */
+.secondary-btn {
+  width: 100%;
+  padding: 8px;
+  background: transparent;
+  color: #cba6f7;
+  border: 1px solid #45475a;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.secondary-btn:hover {
+  border-color: #cba6f7;
+  background: #cba6f712;
+}
+
+/* ---- 小ボタン（保管庫フォーム用） ---- */
+.btn-primary-sm {
+  padding: 6px 14px;
+  background: #cba6f7;
+  color: #1e1e2e;
+  border: none;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn-primary-sm:hover { background: #b895e8; }
+
+.btn-danger-sm {
+  padding: 6px 14px;
+  background: transparent;
+  color: #f38ba8;
+  border: 1px solid #f38ba855;
+  border-radius: 5px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn-danger-sm:hover { background: #f38ba815; }
+
+.btn-cancel-sm {
+  padding: 6px 14px;
+  background: transparent;
+  color: #6c7086;
+  border: 1px solid #45475a;
+  border-radius: 5px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.btn-cancel-sm:hover { color: #a6adc8; }
+
+/* ---- ステータス ---- */
+.status {
+  margin-top: 8px;
+  padding: 7px 11px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.status.success { background: #1e3a2a; color: #a6e3a1; border: 1px solid #2d5a3d; }
+.status.error   { background: #3a1e2a; color: #f38ba8; border: 1px solid #5a2d3d; }
+.status.info    { background: #1e2a3a; color: #89dceb; border: 1px solid #2d3d5a; }
+
+.hidden { display: none !important; }
+
+/* ---- 設定（保管庫の管理） ---- */
+.settings {
+  border-top: 1px solid #313244;
+  padding-top: 10px;
+}
+
+.settings summary {
+  font-size: 11px;
+  color: #6c7086;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  padding: 2px 0;
+}
+
+.settings summary::-webkit-details-marker { display: none; }
+.settings summary:hover { color: #a6adc8; }
+.settings[open] summary { color: #cba6f7; margin-bottom: 10px; }
+
+.settings-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ---- 保管庫リスト ---- */
+.vault-list-empty {
+  font-size: 12px;
+  color: #45475a;
+  text-align: center;
+  padding: 8px 0;
+}
+
+.vault-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #181825;
+  border: 1px solid #313244;
+  border-radius: 6px;
+}
+
+.vault-item.selected {
+  border-color: #cba6f755;
+  background: #cba6f710;
+}
+
+.vault-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.vault-item-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #cdd6f4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vault-item-meta {
+  font-size: 10px;
+  color: #585b70;
+}
+
+.vault-item-edit {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  background: transparent;
+  color: #a6adc8;
+  border: 1px solid #45475a;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.vault-item-edit:hover {
+  color: #cba6f7;
+  border-color: #cba6f7;
+}
+
+/* ---- 保管庫フォーム ---- */
+.vault-form {
+  background: #181825;
+  border: 1px solid #313244;
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.vault-form-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: #a6adc8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+}
+
+.vault-form-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}

@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube to Obsidian",
+  "version": "1.0.0",
+  "description": "YouTubeの動画を文字起こしして自動的にObsidianへ保存する",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "http://127.0.0.1:*/*"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "YouTube to Obsidian"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/watch*"],
+      "js": ["content/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

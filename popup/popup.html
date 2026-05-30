@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <title>YouTube to Obsidian</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <div class="logo">
+          <span class="logo-yt">▶</span>
+          <span class="logo-arrow">→</span>
+          <span class="logo-ob">⬡</span>
+        </div>
+        <h1>YouTube to Obsidian</h1>
+      </header>
+
+      <!-- YouTube以外のページ -->
+      <div id="not-youtube" class="message hidden">
+        <p>YouTubeの動画ページで使用してください</p>
+        <p class="sub">youtube.com/watch?v=... を開いてください</p>
+      </div>
+
+      <!-- 読み込み中 -->
+      <div id="loading" class="message">
+        <p>動画情報を取得中...</p>
+      </div>
+
+      <!-- 動画情報 + 保存操作 -->
+      <div id="video-info" class="hidden">
+        <div class="video-card">
+          <div class="video-title" id="video-title"></div>
+          <div class="channel-name" id="channel-name"></div>
+        </div>
+
+        <div class="dest-section">
+          <div class="dest-label">保存先</div>
+          <div class="form-group">
+            <label for="vault-select">保管庫</label>
+            <div class="vault-select-row">
+              <select id="vault-select"></select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="folder-input">ディレクトリ</label>
+            <input
+              type="text"
+              id="folder-input"
+              placeholder="YouTube（空白でルートに保存）"
+            />
+            <div class="path-hint" id="path-hint"></div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="caption-select">字幕言語</label>
+          <select id="caption-select"></select>
+        </div>
+
+        <button id="save-btn" class="primary-btn">
+          <span id="save-btn-text">Obsidianに保存</span>
+        </button>
+
+        <div id="status" class="status hidden"></div>
+      </div>
+
+      <!-- 保管庫の管理 -->
+      <details id="vault-settings" class="settings">
+        <summary>⚙ 保管庫の管理</summary>
+        <div class="settings-content">
+
+          <div id="vault-list"></div>
+
+          <button id="add-vault-btn" class="secondary-btn">＋ 保管庫を追加</button>
+
+          <div id="vault-form" class="vault-form hidden">
+            <div class="vault-form-header">
+              <span id="vault-form-title">新しい保管庫</span>
+            </div>
+            <div class="form-group">
+              <label for="vf-name">名前</label>
+              <input type="text" id="vf-name" placeholder="メインVault" />
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="vf-port">ポート番号</label>
+                <input type="number" id="vf-port" value="27123" min="1" max="65535" />
+              </div>
+              <div class="form-group">
+                <label for="vf-default-folder">デフォルトフォルダ</label>
+                <input type="text" id="vf-default-folder" placeholder="YouTube" />
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="vf-api-key">APIキー</label>
+              <input
+                type="password"
+                id="vf-api-key"
+                placeholder="Local REST APIプラグインで確認"
+              />
+            </div>
+            <div class="vault-form-actions">
+              <button id="vf-save-btn" class="btn-primary-sm">保存</button>
+              <button id="vf-delete-btn" class="btn-danger-sm hidden">削除</button>
+              <button id="vf-cancel-btn" class="btn-cancel-sm">キャンセル</button>
+            </div>
+            <div id="vault-form-status" class="status hidden"></div>
+          </div>
+
+        </div>
+      </details>
+    </div>
+    <script src="../src/utils.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
