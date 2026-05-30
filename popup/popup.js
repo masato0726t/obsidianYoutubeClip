@@ -302,80 +302,129 @@ async function handleVaultDelete() {
 }
 
 // ---- 字幕フェッチ（YouTubeページの MAIN world で実行） ----
-// fetch はYouTubeのService Workerにインターセプトされる可能性があるため
-// XMLHttpRequest を使用する（SW のインターセプト対象外）。
-// 最終手段としてウォッチページHTMLから新鮮な字幕URLを取得する。
 // 外部スコープを参照してはならない（executeScript でシリアライズされるため）。
+//
+// 戦略1: get_transcript Inner Tube API（Transcript パネルと同じ正規API）
+//   - ytcfg から APIキー・VisitorData・ClientVersion を取得してリクエスト
+//   - credentials:'include' でクッキーを付与
+// 戦略2: XHR で timedtext URL を複数パターン試行
+// 戦略3: ウォッチページHTMLから新鮮な字幕URLを取得して再試行
 function _fetchCaptionTextFromPage(captionUrl, videoId, languageCode, isAsr) {
+
+  // ---- Inner Tube get_transcript ----
+  function fetchViaInnerTube() {
+    const cfg = (window.ytcfg && window.ytcfg.data_) || {};
+    const apiKey      = cfg.INNERTUBE_API_KEY || "";
+    const visitorData = cfg.VISITOR_DATA || "";
+    const clientVer   = cfg.INNERTUBE_CLIENT_VERSION || "2.20240930.00.00";
+
+    // protobuf: outer{field1: inner{field1: videoId}, field2: ""}
+    const vBytes = videoId.split("").map(function(c) { return c.charCodeAt(0); });
+    const inner  = [0x0a, vBytes.length].concat(vBytes);
+    const outer  = [0x0a, inner.length].concat(inner).concat([0x12, 0x00]);
+    const params = btoa(String.fromCharCode.apply(null, outer));
+
+    const headers = { "Content-Type": "application/json" };
+    if (visitorData) headers["X-Goog-Visitor-Id"] = visitorData;
+
+    const path = "/youtubei/v1/get_transcript" + (apiKey ? "?key=" + apiKey : "");
+
+    return fetch("https://www.youtube.com" + path, {
+      method: "POST",
+      headers: headers,
+      credentials: "include",
+      body: JSON.stringify({
+        context: { client: { clientName: "WEB", clientVersion: clientVer, hl: languageCode || "ja", gl: "JP" } },
+        params: params
+      })
+    }).then(function(res) {
+      return res.ok ? res.json() : null;
+    }).then(function(data) {
+      if (!data) return null;
+      const segs = (
+        data.actions && data.actions[0] &&
+        data.actions[0].updateEngagementPanelAction &&
+        data.actions[0].updateEngagementPanelAction.content &&
+        data.actions[0].updateEngagementPanelAction.content.transcriptRenderer &&
+        data.actions[0].updateEngagementPanelAction.content.transcriptRenderer.content &&
+        data.actions[0].updateEngagementPanelAction.content.transcriptRenderer.content.transcriptSearchPanelRenderer &&
+        data.actions[0].updateEngagementPanelAction.content.transcriptRenderer.content.transcriptSearchPanelRenderer.body &&
+        data.actions[0].updateEngagementPanelAction.content.transcriptRenderer.content.transcriptSearchPanelRenderer.body.transcriptSegmentListRenderer &&
+        data.actions[0].updateEngagementPanelAction.content.transcriptRenderer.content.transcriptSearchPanelRenderer.body.transcriptSegmentListRenderer.initialSegments
+      ) || [];
+      if (!segs.length) return null;
+      const lines = [];
+      for (let i = 0; i < segs.length; i++) {
+        const r = segs[i] && segs[i].transcriptSegmentRenderer;
+        if (!r) continue;
+        const secs = Math.floor((parseInt(r.startMs) || 0) / 1000);
+        const time = Math.floor(secs / 60) + ":" + ("0" + (secs % 60)).slice(-2);
+        const runs = (r.snippet && r.snippet.runs) || [];
+        const text = runs.map(function(x) { return x.text || ""; }).join("").replace(/\n/g, " ").trim();
+        if (text) lines.push("[" + time + "] " + text);
+      }
+      return lines.length ? lines.join("\n") : null;
+    }).catch(function() { return null; });
+  }
+
+  // ---- XHR ヘルパー ----
   function xhrGet(url) {
-    return new Promise(function (resolve) {
+    return new Promise(function(resolve) {
       const xhr = new XMLHttpRequest();
       xhr.open("GET", url, true);
       xhr.timeout = 10000;
-      xhr.onload = function () {
-        resolve({ ok: this.status >= 200 && this.status < 300, text: this.responseText || "" });
-      };
-      xhr.onerror = function () { resolve({ ok: false, text: "" }); };
-      xhr.ontimeout = function () { resolve({ ok: false, text: "" }); };
+      xhr.onload  = function() { resolve(this.status === 200 ? (this.responseText || "") : ""); };
+      xhr.onerror = xhr.ontimeout = function() { resolve(""); };
       xhr.send();
     });
   }
 
   function norm(u) { return u.startsWith("//") ? "https:" + u : u; }
-
   const base = norm(captionUrl);
   const kind = isAsr ? "&kind=asr" : "";
-
-  // baseUrl + fmt=json3
   let withFmt = base;
-  try { const u = new URL(base); u.searchParams.set("fmt", "json3"); withFmt = u.toString(); } catch (_) {}
+  try { const u = new URL(base); u.searchParams.set("fmt", "json3"); withFmt = u.toString(); } catch(_) {}
 
   const candidates = [
-    withFmt,
-    base,
+    withFmt, base,
     "https://www.youtube.com/api/timedtext?v=" + videoId + "&lang=" + languageCode + kind + "&fmt=json3",
     "https://www.youtube.com/api/timedtext?v=" + videoId + "&lang=" + languageCode + kind,
   ];
 
-  // 戦略1-4: 候補URLを順番に試みる
-  function tryCandidates(index) {
-    if (index >= candidates.length) return tryPageHtmlFallback();
-    return xhrGet(candidates[index]).then(function (r) {
-      if (r.ok && r.text.trim()) return { text: r.text };
-      return tryCandidates(index + 1);
+  function tryXhr(i) {
+    if (i >= candidates.length) return tryHtmlFallback();
+    return xhrGet(candidates[i]).then(function(text) {
+      return (text && text.trim()) ? { text: text } : tryXhr(i + 1);
     });
   }
 
-  // 戦略5（最終手段）: ウォッチページHTMLから字幕URLを再取得して使用
-  function tryPageHtmlFallback() {
-    return xhrGet("https://www.youtube.com/watch?v=" + videoId + "&hl=ja").then(function (r) {
-      if (!r.ok || !r.text) return { error: "字幕データを取得できませんでした" };
-      // HTMLから captionTracks を抽出
-      const m = r.text.match(/"captionTracks":(\[.*?\]),"audioTracks"/);
-      if (!m) return { error: "ページ内に字幕データが見つかりませんでした" };
+  function tryHtmlFallback() {
+    return xhrGet("https://www.youtube.com/watch?v=" + videoId + "&hl=ja").then(function(html) {
+      if (!html) return { error: "字幕データを取得できませんでした" };
+      const m = html.match(/"captionTracks":(\[.*?\]),"audioTracks"/);
+      if (!m) return { error: "ページ内に字幕情報が見つかりませんでした" };
       let tracks;
-      try { tracks = JSON.parse(m[1]); } catch (_) {
-        return { error: "字幕データの解析に失敗しました" };
-      }
+      try { tracks = JSON.parse(m[1]); } catch(_) { return { error: "字幕データの解析に失敗しました" }; }
       const track =
-        tracks.find(function (t) { return t.languageCode === languageCode && (!isAsr || t.kind === "asr"); }) ||
-        tracks.find(function (t) { return t.languageCode === languageCode; }) ||
+        tracks.find(function(t) { return t.languageCode === languageCode && (!isAsr || t.kind === "asr"); }) ||
+        tracks.find(function(t) { return t.languageCode === languageCode; }) ||
         tracks[0];
-      if (!track || !track.baseUrl) return { error: "該当する字幕トラックが見つかりませんでした" };
-      // 取得したURLで再試行
+      if (!track || !track.baseUrl) return { error: "字幕トラックが見つかりませんでした" };
       let freshUrl = norm(track.baseUrl);
-      try { const u = new URL(freshUrl); u.searchParams.set("fmt", "json3"); freshUrl = u.toString(); } catch (_) {}
-      return xhrGet(freshUrl).then(function (fr) {
-        if (fr.ok && fr.text.trim()) return { text: fr.text };
-        return xhrGet(norm(track.baseUrl)).then(function (xr) {
-          if (xr.ok && xr.text.trim()) return { text: xr.text };
-          return { error: "字幕データを取得できませんでした" };
+      try { const u = new URL(freshUrl); u.searchParams.set("fmt", "json3"); freshUrl = u.toString(); } catch(_) {}
+      return xhrGet(freshUrl).then(function(t) {
+        if (t && t.trim()) return { text: t };
+        return xhrGet(norm(track.baseUrl)).then(function(t2) {
+          return (t2 && t2.trim()) ? { text: t2 } : { error: "字幕データを取得できませんでした" };
         });
       });
     });
   }
 
-  return tryCandidates(0);
+  // Inner Tube → XHR → HTML の順で試みる
+  return fetchViaInnerTube().then(function(text) {
+    return text ? { text: text } : tryXhr(0);
+  });
 }
 
 // ---- Obsidianへ保存 ----
