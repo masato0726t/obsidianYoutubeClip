@@ -301,11 +301,74 @@ async function handleVaultDelete() {
   closeVaultForm();
 }
 
-// ---- プレーヤー字幕収集方式（YouTubeページの MAIN world で実行） ----
-// timedtext / get_transcript は PoToken・仕様変更で全滅のため、
-// プレーヤー自身（PoToken 解決済み）に字幕を表示させ DOM から収集する。
+// ---- 戦略A: DOM 文字起こしパネル方式（高速・第一選択） ----
+// YouTube 自身にパネルを開かせると、YouTube が内部で PoToken・署名を解決して
+// 字幕をロードする。そのDOMを読むだけなので、パネルが開ける動画は一瞬で全文取得できる。
+// 単一 executeScript で完結（最大~8秒）。取れなければ { noPanel: true } を返す。
+function _collectViaPanel() {
+  function delay(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  function readSegs() {
+    var nodes = document.querySelectorAll("ytd-transcript-segment-renderer");
+    if (!nodes.length) return null;
+    var lines = [];
+    for (var i = 0; i < nodes.length; i++) {
+      var ts = nodes[i].querySelector(".segment-timestamp");
+      var tx = nodes[i].querySelector(".segment-text") ||
+               nodes[i].querySelector("yt-formatted-string.segment-text");
+      var time = ts ? ts.textContent.trim() : "";
+      var txt  = tx ? tx.textContent.replace(/\s+/g, " ").trim() : "";
+      if (txt) lines.push((time ? "[" + time + "] " : "") + txt);
+    }
+    return lines.length ? lines.join("\n") : null;
+  }
+
+  // 既にパネルが開いていれば即読み取り
+  var immediate = readSegs();
+  if (immediate) return Promise.resolve({ text: immediate });
+
+  // 説明欄を展開
+  var expand = document.querySelector("#description #expand") ||
+               document.querySelector("#expand");
+  if (expand) { try { expand.click(); } catch (e) {} }
+
+  return delay(500).then(function () {
+    // 「文字起こしを表示」ボタンを優先順位付きで探す
+    var btn = document.querySelector(
+      "ytd-video-description-transcript-section-renderer button, " +
+      "ytd-video-description-transcript-section-renderer ytd-button-renderer"
+    );
+    if (!btn) {
+      btn = document.querySelector(
+        'button[aria-label*="文字起こし"], button[aria-label*="ranscript"], ' +
+        'ytd-button-renderer[aria-label*="文字起こし"], ytd-button-renderer[aria-label*="ranscript"]'
+      );
+    }
+    if (!btn) {
+      var els = document.querySelectorAll("button, tp-yt-paper-button, ytd-button-renderer");
+      for (var i = 0; i < els.length; i++) {
+        var l = ((els[i].getAttribute && els[i].getAttribute("aria-label")) || "") + " " +
+                (els[i].textContent || "");
+        if (/文字起こし|transcript/i.test(l)) { btn = els[i]; break; }
+      }
+    }
+    if (btn) { try { btn.click(); } catch (e) {} }
+
+    // セグメント出現を最大 ~8 秒ポーリング（200ms × 40）
+    function poll(n) {
+      var t = readSegs();
+      if (t) return Promise.resolve({ text: t });
+      if (n >= 40) return Promise.resolve({ noPanel: true });
+      return delay(200).then(function () { return poll(n + 1); });
+    }
+    return poll(0);
+  });
+}
+
+// ---- 戦略B: プレーヤー字幕収集方式（フォールバック・確実） ----
+// パネルが無い動画用。プレーヤー自身（PoToken 解決済み）に字幕を表示させ DOM から収集。
+// video 要素の playbackRate を直接上げて高速化する。
 // 外部スコープを参照してはならない（executeScript でシリアライズされるため）。
-//
 // 収集状態は window.__ytClip に保持し、popup 側から poll する2段構成。
 
 // 収集を開始する（即 return。動画をミュート・最高速で裏再生し字幕を収集）
@@ -340,15 +403,14 @@ function _startCaptionCollection(languageCode) {
     try { player.setOption("captions", "reload", true); } catch (e) {}
     try { player.setOption("captions", "track", { languageCode: languageCode || "ja" }); } catch (e) {}
 
-    // ミュート・先頭へ・最高速で再生
+    // ミュート・先頭へ・高速で再生
+    var video = document.querySelector("video");
+    var targetRate = 6; // YouTube API は最大2xだが video要素直接設定で超過させる
     try { player.mute && player.mute(); } catch (e) {}
     try { player.seekTo && player.seekTo(0, true); } catch (e) {}
-    try {
-      var rates = player.getAvailablePlaybackRates ? player.getAvailablePlaybackRates() : [1, 2];
-      var maxRate = rates && rates.length ? rates[rates.length - 1] : 2;
-      player.setPlaybackRate && player.setPlaybackRate(maxRate);
-      state.rate = maxRate;
-    } catch (e) {}
+    try { player.setPlaybackRate && player.setPlaybackRate(2); } catch (e) {}
+    try { if (video) video.playbackRate = targetRate; } catch (e) {}
+    state.rate = targetRate;
     try { player.playVideo && player.playVideo(); } catch (e) {}
 
     // 現在画面に出ている字幕テキストを取り込む（重複は無視）
@@ -385,9 +447,11 @@ function _startCaptionCollection(languageCode) {
       state.observer.observe(container, { childList: true, subtree: true, characterData: true });
     } catch (e) {}
 
-    // 250ms ごとにポーリング補完＋終端判定
+    // 250ms ごとにポーリング補完＋倍率維持＋終端判定
     state.interval = setInterval(function () {
       capture();
+      // YouTube が倍率を戻すことがあるため再設定
+      try { if (video && video.playbackRate < targetRate) video.playbackRate = targetRate; } catch (e) {}
       var cur = player.getCurrentTime ? player.getCurrentTime() : 0;
       var ended = player.getPlayerState ? player.getPlayerState() === 0 : false;
       if (ended || (state.duration && cur >= state.duration - 0.5)) finish();
@@ -454,58 +518,73 @@ async function handleSave() {
     const selectedTrack = videoInfo.captionTracks.find((t) => t.baseUrl === captionUrl);
     const langCode = selectedTrack?.languageCode ?? "";
 
-    // 1. プレーヤー字幕収集を開始（動画をミュート・高速で裏再生し字幕を収集）
-    const [startExec] = await chrome.scripting.executeScript({
+    let transcript = null;
+
+    // === 戦略A: DOM 文字起こしパネル方式（高速） ===
+    showStatus("status", "文字起こしパネルを確認中...", "info");
+    const [panelExec] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       world: "MAIN",
-      func: _startCaptionCollection,
-      args: [langCode],
+      func: _collectViaPanel,
     });
-    const startResult = startExec?.result;
-    if (!startResult || startResult.error) {
-      showStatus("status", startResult?.error || "字幕収集を開始できませんでした", "error");
-      return;
+    const panelResult = panelExec?.result;
+    if (panelResult?.text && panelResult.text.trim()) {
+      transcript = panelResult.text;
     }
 
-    // 2. 完了までポーリング（500ms間隔）。進捗を表示。
-    //    タイムアウト = 想定再生時間（duration / rate）+ 余裕30秒。最低でも60秒。
-    const rate = startResult.rate || 1;
-    const duration = startResult.duration || 0;
-    const timeoutMs = Math.max(60000, ((duration / Math.max(rate, 1)) + 30) * 1000);
-    const startedAt = Date.now();
-
-    let transcript = null;
-    while (true) {
-      await new Promise((r) => setTimeout(r, 500));
-      const [pollExec] = await chrome.scripting.executeScript({
+    // === 戦略B: プレーヤー字幕収集（パネルが無い動画のフォールバック） ===
+    if (!transcript) {
+      showStatus("status", "字幕の収集を開始しています...（再生して収集します）", "info");
+      const [startExec] = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         world: "MAIN",
-        func: _pollCaptionCollection,
+        func: _startCaptionCollection,
+        args: [langCode],
       });
-      const poll = pollExec?.result;
-      if (poll?.error) {
-        showStatus("status", poll.error, "error");
+      const startResult = startExec?.result;
+      if (!startResult || startResult.error) {
+        showStatus("status", startResult?.error || "字幕収集を開始できませんでした", "error");
         return;
       }
 
-      if (poll?.done) {
-        transcript = poll.text || "";
-        break;
-      }
+      // 完了までポーリング（500ms間隔）。進捗を表示。
+      // タイムアウト = 想定再生時間（duration / rate）+ 余裕30秒。最低でも60秒。
+      const rate = startResult.rate || 1;
+      const duration = startResult.duration || 0;
+      const timeoutMs = Math.max(60000, ((duration / Math.max(rate, 1)) + 30) * 1000);
+      const startedAt = Date.now();
 
-      // 進捗表示
-      const pct = duration ? Math.min(99, Math.floor((poll.cur / duration) * 100)) : 0;
-      showStatus("status", `字幕を収集中... ${pct}%（${poll.count}件）`, "info");
-
-      // タイムアウト → 強制停止して現時点までの結果を使う
-      if (Date.now() - startedAt > timeoutMs) {
-        const [stopExec] = await chrome.scripting.executeScript({
+      while (true) {
+        await new Promise((r) => setTimeout(r, 500));
+        const [pollExec] = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           world: "MAIN",
-          func: _stopCaptionCollection,
+          func: _pollCaptionCollection,
         });
-        transcript = stopExec?.result?.text || "";
-        break;
+        const poll = pollExec?.result;
+        if (poll?.error) {
+          showStatus("status", poll.error, "error");
+          return;
+        }
+
+        if (poll?.done) {
+          transcript = poll.text || "";
+          break;
+        }
+
+        const pct = duration ? Math.min(99, Math.floor((poll.cur / duration) * 100)) : 0;
+        showStatus("status", `字幕を収集中... ${pct}%（${poll.count}件）`, "info");
+
+        // タイムアウト → 強制停止して現時点までの結果を使う
+        if (Date.now() - startedAt > timeoutMs) {
+          const [stopExec] = await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            world: "MAIN",
+            func: _stopCaptionCollection,
+          });
+          transcript = stopExec?.result?.text || "";
+          break;
+        }
       }
     }
 
